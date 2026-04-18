@@ -2,194 +2,118 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
-    <title>Avatar Arena Browser Edition</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/tiktok-live-connector@latest/dist/browser-index.min.js"></script>
+    <title>Arena Live TikTok</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.6.0/dist/jquery.min.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #1a1a1a; font-family: sans-serif; }
-        canvas { display: block; }
-        
-        /* Painel de Login/Config */
-        #setup { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
-                 background: rgba(0,0,0,0.9); padding: 20px; border-radius: 10px; color: white; text-align: center; z-index: 100; }
-        input { padding: 10px; border-radius: 5px; border: none; width: 200px; margin-bottom: 10px; }
-        button { padding: 10px 20px; background: #2ecc71; border: none; color: white; cursor: pointer; border-radius: 5px; }
-
-        /* HUDs */
-        #status { position: absolute; top: 10px; left: 10px; color: #2ecc71; font-weight: bold; }
-        #timer { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); color: white; font-size: 30px; font-weight: bold; }
-        #leaderboard { position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); color: white; padding: 15px; border-radius: 8px; width: 180px; }
+        body { margin: 0; overflow: hidden; background: #1a1a1a; font-family: sans-serif; }
+        canvas { display: block; background-image: url('fundo.jpg'); background-size: cover; }
+        #overlay { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.8); padding: 20px; border-radius: 10px; color: white; text-align: center; z-index: 100; }
+        input { padding: 10px; border-radius: 5px; border: none; margin-bottom: 10px; width: 200px; }
+        button { padding: 10px 20px; background: #2ecc71; border: none; color: white; cursor: pointer; border-radius: 5px; font-weight: bold; }
+        #status { position: absolute; top: 10px; left: 10px; color: #fff; font-size: 12px; z-index: 10; }
     </style>
 </head>
 <body>
 
-<div id="setup">
-    <h2>Avatar Arena Live</h2>
-    <input type="text" id="username" placeholder="Seu Usuário do TikTok">
-    <br>
-    <button onclick="conectarLive()">ENTRAR NA ARENA</button>
-    <p style="font-size: 12px; color: #888;">Certifique-se de estar AO VIVO antes de conectar.</p>
-</div>
+<div id="status">Status: Desconectado</div>
 
-<div id="status">🔴 Desconectado</div>
-<div id="timer">05:00</div>
-<div id="leaderboard">
-    <div style="color: #f1c40f; font-weight: bold; margin-bottom: 10px;">🏆 TOP ABATES</div>
-    <div id="lista-abates"></div>
+<div id="overlay">
+    <h2>Arena Interativa</h2>
+    <p>Digite seu usuário do TikTok (sem @)</p>
+    <input type="text" id="username" placeholder="ex: alinecristina.oficial">
+    <br>
+    <button id="connectBtn">CONECTAR E INICIAR</button>
 </div>
 
 <canvas id="arena"></canvas>
 
-<script>
+<script type="module">
+    // Usaremos um servidor de proxy público para o navegador conseguir ler o TikTok
+    import { WebcastPushConnection } from 'https://cdn.jsdelivr.net/npm/tiktok-live-connector-browser@latest/dist/tiktok-live-connector-browser.min.js';
+
     const canvas = document.getElementById('arena');
     const ctx = canvas.getContext('2d');
+    const statusDiv = document.getElementById('status');
     let players = {};
-    let particles = [];
-    let gameActive = true;
-    let timeLeft = 300;
-    let tiktokConn;
+    let connection;
 
     function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
     window.onresize = resize; resize();
 
-    const NIVEIS = {
-        1: { raioMult: 1.2, vel: 0.05, cor: '#95a5a6' },
-        2: { raioMult: 1.4, vel: 0.08, cor: '#3498db' },
-        3: { raioMult: 1.7, vel: 0.12, cor: '#f1c40f' },
-        4: { raioMult: 2.1, vel: 0.20, cor: '#e74c3c' }
+    document.getElementById('connectBtn').onclick = () => {
+        const username = document.getElementById('username').value;
+        if (!username) return alert("Digite o usuário!");
+
+        statusDiv.innerText = "Conectando...";
+        
+        // Inicializa a conexão
+        connection = new WebcastPushConnection(username);
+
+        connection.connect().then(state => {
+            statusDiv.innerText = `Conectado ao ID: ${state.roomId}`;
+            document.getElementById('overlay').style.display = 'none';
+            startArena();
+        }).catch(err => {
+            statusDiv.innerText = "Erro: " + err;
+            console.error(err);
+        });
+
+        // Eventos da Live
+        connection.on('chat', data => {
+            console.log(`${data.uniqueId} disse: ${data.comment}`);
+        });
+
+        connection.on('gift', data => {
+            spawnOrUpgrade(data.uniqueId, data.profilePictureUrl, 'gift', data.giftName);
+        });
+
+        connection.on('like', data => {
+            spawnOrUpgrade(data.uniqueId, data.profilePictureUrl, 'like');
+        });
     };
 
-    function conectarLive() {
-        const user = document.getElementById('username').value;
-        if (!user) return alert("Digite o usuário!");
-
-        // Usando o conector via browser (WebcastPushConnection)
-        tiktokConn = new TikTokLiveConnector.WebcastPushConnection(user);
-
-        tiktokConn.connect().then(state => {
-            document.getElementById('setup').style.display = 'none';
-            document.getElementById('status').innerText = "🟢 Conectado: " + user;
-            iniciarContagem();
-        }).catch(err => {
-            alert("Erro ao conectar: " + err);
-        });
-
-        // Eventos
-        tiktokConn.on('like', data => handleEvent(data.uniqueId, data.profilePictureUrl, 'like'));
-        tiktokConn.on('gift', data => handleEvent(data.uniqueId, data.profilePictureUrl, 'gift', data.giftName));
-    }
-
-    function handleEvent(userId, pic, type, giftName = "") {
-        if (!players[userId]) {
-            players[userId] = {
-                id: userId, x: Math.random() * canvas.width, y: Math.random() * canvas.height,
-                size: 40, nivel: 1, angle: 0, abates: 0, img: new Image()
+    function spawnOrUpgrade(id, pic, type, gift = "") {
+        if (!players[id]) {
+            players[id] = {
+                id: id, x: Math.random() * canvas.width, y: Math.random() * canvas.height,
+                size: 40, nivel: 1, angle: 0, img: new Image()
             };
-            players[userId].img.src = pic;
+            players[id].img.src = pic;
         }
-
-        const p = players[userId];
-        if (type === 'like') p.nivel = 1;
+        
         if (type === 'gift') {
-            const g = giftName.toLowerCase();
-            if (g.includes('rosa') || g.includes('rose')) p.nivel = 3;
-            if (g.includes('perfume') || g.includes('heart')) p.nivel = 4;
-            p.size += 5; // Presente sempre dá um boost de vida
+            players[id].size += 2;
+            if (gift.toLowerCase().includes("rosa")) players[id].nivel = 2;
         }
     }
 
-    function checkCollisions() {
-        let ids = Object.keys(players);
-        for (let i = 0; i < ids.length; i++) {
-            for (let j = i + 1; j < ids.length; j++) {
-                let p1 = players[ids[i]], p2 = players[ids[j]];
-                let dx = p1.x - p2.x, dy = p1.y - p2.y;
-                let dist = Math.sqrt(dx*dx + dy*dy);
+    function startArena() {
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let id in players) {
+                let p = players[id];
+                p.angle += 0.05;
                 
-                if (dist < (p1.size * NIVEIS[p1.nivel].raioMult) + (p2.size * NIVEIS[p2.nivel].raioMult)) {
-                    if (p1.nivel > p2.nivel || p1.size > p2.size + 5) {
-                        applyDamage(ids[i], ids[j]);
-                    } else {
-                        applyDamage(ids[j], ids[i]);
-                    }
-                }
+                // Desenha a "Serra" básica
+                ctx.save();
+                ctx.translate(p.x, p.y);
+                ctx.rotate(p.angle);
+                ctx.fillStyle = p.nivel > 1 ? "gold" : "silver";
+                ctx.fillRect(-p.size-5, -p.size-5, (p.size+5)*2, (p.size+5)*2);
+                ctx.restore();
+
+                // Desenha a Foto
+                ctx.save();
+                ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.clip();
+                if (p.img.complete) ctx.drawImage(p.img, p.x - p.size, p.y - p.size, p.size * 2, p.size * 2);
+                ctx.restore();
             }
+            requestAnimationFrame(draw);
         }
+        draw();
     }
-
-    function applyDamage(atkId, vicId) {
-        players[vicId].size -= 0.5;
-        if (players[vicId].size < 20) {
-            players[atkId].abates++;
-            explode(players[vicId].x, players[vicId].y, NIVEIS[players[vicId].nivel].cor);
-            delete players[vicId];
-            updateLeaderboard();
-        }
-    }
-
-    function explode(x, y, cor) {
-        for(let i=0; i<15; i++) {
-            particles.push({x, y, vx: (Math.random()-0.5)*10, vy: (Math.random()-0.5)*10, life: 30, cor});
-        }
-    }
-
-    function updateLeaderboard() {
-        const top = Object.values(players).sort((a,b) => b.abates - a.abates).slice(0, 5);
-        document.getElementById('lista-abates').innerHTML = top.map((p, i) => 
-            `<div style="font-size:13px">${i+1}. ${p.id.substring(0,10)} - ${p.abates}⚔️</div>`
-        ).join('');
-    }
-
-    function iniciarContagem() {
-        setInterval(() => {
-            if (timeLeft > 0) {
-                timeLeft--;
-                let m = Math.floor(timeLeft/60), s = timeLeft%60;
-                document.getElementById('timer').innerText = `${m}:${s<10?'0':''}${s}`;
-            } else { gameActive = false; }
-        }, 1000);
-    }
-
-    function draw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        if (!gameActive) {
-            ctx.fillStyle = "white"; ctx.font = "40px Arial"; ctx.textAlign = "center";
-            ctx.fillText("FIM DE JOGO!", canvas.width/2, canvas.height/2);
-            return requestAnimationFrame(draw);
-        }
-
-        checkCollisions();
-
-        particles.forEach((pt, i) => {
-            pt.x += pt.vx; pt.y += pt.vy; pt.life--;
-            ctx.fillStyle = pt.cor; ctx.globalAlpha = pt.life/30;
-            ctx.beginPath(); ctx.arc(pt.x, pt.y, 3, 0, Math.PI*2); ctx.fill();
-            if(pt.life <= 0) particles.splice(i, 1);
-        });
-        ctx.globalAlpha = 1;
-
-        for (let id in players) {
-            let p = players[id];
-            p.angle += NIVEIS[p.nivel].vel;
-            
-            // Desenhar Serra
-            const conf = NIVEIS[p.nivel];
-            ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.angle);
-            ctx.beginPath();
-            for(let i=0; i<24; i++) {
-                let r = (i%2==0) ? p.size*conf.raioMult : p.size*conf.raioMult*0.8;
-                ctx.lineTo(r*Math.cos(Math.PI*i/12), r*Math.sin(Math.PI*i/12));
-            }
-            ctx.fillStyle = conf.cor; ctx.fill(); ctx.restore();
-
-            // Foto
-            ctx.save(); ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.clip();
-            if(p.img.complete) ctx.drawImage(p.img, p.x-p.size, p.y-p.size, p.size*2, p.size*2);
-            ctx.restore();
-        }
-        requestAnimationFrame(draw);
-    }
-    draw();
 </script>
+
 </body>
 </html>
